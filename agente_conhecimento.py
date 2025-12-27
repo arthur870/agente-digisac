@@ -6,6 +6,7 @@ import json
 import hashlib
 import os
 import random
+import threading
 from datetime import datetime
 from flask import Flask, request, jsonify
 from openai import OpenAI
@@ -428,22 +429,28 @@ def webhook():
         for conhecimento in conhecimentos:
             registrar_uso_conhecimento(conhecimento.get('id'))
         
-        # 4. Delay variável para simular interação humana (30-60 segundos)
+        # 4. Agendar envio com delay assíncrono (30-60 segundos)
         delay = random.randint(30, 60)
-        log(f"⏳ Aguardando {delay}s para simular interação humana...")
-        time.sleep(delay)
+        log(f"⏳ Resposta agendada para envio em {delay}s (assíncrono)")
         
-        # 5. Enviar resposta
-        if enviar_mensagem_digisac(contact_id, resposta):
-            log(f"✅ Resposta enviada")
-        else:
-            return jsonify({"status": "send_failed"}), 500
+        # Função para enviar após delay (em thread separada)
+        def enviar_com_delay():
+            time.sleep(delay)
+            log(f"📤 Enviando resposta após {delay}s de delay...")
+            if enviar_mensagem_digisac(contact_id, resposta):
+                log(f"✅ Resposta enviada com sucesso")
+            else:
+                log(f"❌ Erro ao enviar resposta")
         
-        # 6. Marcar como processada
+        # Iniciar thread para envio com delay
+        thread = threading.Thread(target=enviar_com_delay, daemon=True)
+        thread.start()
+        
+        # 5. Marcar como processada imediatamente (não esperar delay)
         mensagens_processadas[message_id] = time.time()
         
-        log(f"✅ Processamento completo")
-        return jsonify({"status": "success"}), 200
+        log(f"✅ Processamento completo (resposta será enviada em {delay}s)")
+        return jsonify({"status": "scheduled", "delay": delay}), 200
             
     except Exception as e:
         log(f"❌ Erro no webhook: {e}")
