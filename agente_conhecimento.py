@@ -205,7 +205,7 @@ IMPORTANTE: Use APENAS as informações da base de conhecimento acima. Se não t
 
         # Chamar OpenAI
         response = client.chat.completions.create(
-            model="gpt-4",
+            model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": pergunta}
