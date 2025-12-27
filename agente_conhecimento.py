@@ -285,6 +285,7 @@ def verificar_atendente_humano(dados):
 # ========== WEBHOOK ENDPOINT ==========
 
 @app.route('/webhook', methods=['POST'])
+@app.route('/webhook/digisac', methods=['POST'])
 def webhook():
     """Recebe mensagens do Digisac via webhook"""
     try:
