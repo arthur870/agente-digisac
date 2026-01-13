@@ -252,3 +252,17 @@
   "ativo": true,
   "prioridade": "alta"
 }
+  {
+    "id": "kb_017",
+    "categoria": "comercial",
+    "titulo": "Loja Virtual Colégio Querubins - Pronta Entrega",
+    "conteudo": "Exceção comercial: Para uniformes do Colégio Querubins, oferecemos compra via loja virtual com materiais em estoque para pronta entrega. O responsável indica a unidade da escola na compra e despachamos no dia seguinte para a unidade escolhida. Esta modalidade NÃO tem pedido mínimo e NÃO segue o prazo padrão de 30 dias. Link da loja: https://difardamodacorporativa2.lojavirtualnuvem.com.br/",
+    "tipo": "comercial",
+    "fonte": "Informação comercial - Colégio Querubins",
+    "palavras_chave": ["querubins", "colégio", "escola", "loja virtual", "pronta entrega", "estoque", "unidade", "dia seguinte", "uniforme escolar", "comprar online"],
+    "data_criacao": "2025-12-27T21:45:00",
+    "data_atualizacao": "2025-12-27T21:45:00",
+    "versao": 1,
+    "ativo": true,
+    "prioridade": "alta"
+  }
