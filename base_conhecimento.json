@@ -238,3 +238,17 @@
     "perguntas": "uma por vez"
   }
 }
+{
+  "id": "kb_016",
+  "categoria": "comercial",
+  "titulo": "Loja Virtual Colégio El Elyon - Pronta Entrega",
+  "conteudo": "Exceção comercial: Para uniformes do Colégio El Elyon em Açailândia, oferecemos compra via loja virtual com entrega em até 24 horas no endereço cadastrado. Esta modalidade NÃO tem pedido mínimo e NÃO segue o prazo padrão de 30 dias. Link da loja: https://colegioelelyon.lojavirtualnuvem.com.br/, As peças disponíveis no site são as peças que temos em estoque.",
+  "tipo": "comercial",
+  "fonte": "Informação comercial - Colégio Elelyon",
+  "palavras_chave": ["elelyon", "colégio", "escola", "loja virtual", "pronta entrega", "açailândia", "24 horas", "uniforme escolar", "comprar online"],
+  "data_criacao": "2025-12-27T21:40:00",
+  "data_atualizacao": "2025-12-27T21:40:00",
+  "versao": 1,
+  "ativo": true,
+  "prioridade": "alta"
+}
