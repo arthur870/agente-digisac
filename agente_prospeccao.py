@@ -552,6 +552,10 @@ def webhook_prospeccao():
             "content": resposta
         })
         
+        # DELAY de 15 segundos para parecer mais humano
+        log("⏳ Aguardando 15 segundos para parecer mais humano...")
+        time.sleep(15)
+        
         # Enviar resposta
         enviar_mensagem_digisac(contact_id, resposta)
         
