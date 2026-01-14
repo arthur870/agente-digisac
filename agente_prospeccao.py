@@ -212,6 +212,17 @@ def extrair_dados_conversa(historico):
     if numeros:
         dados['porte'] = numeros[0]  # Primeiro número encontrado
     
+    # Tentar extrair nome (procurar por padrões como "meu nome é", "sou", "me chamo")
+    nome_patterns = [
+        r'(?:meu nome é|me chamo|sou o|sou a|sou)\s+([A-ZÁÉÍÓÚ][a-záéíóú]+(?:\s+[A-ZÁÉÍÓÚ][a-záéíóú]+)*)',
+        r'([A-ZÁÉÍÓÚ][a-záéíóú]+(?:\s+[A-ZÁÉÍÓÚ][a-záéíóú]+)+)(?=\s*,|\s*\.|$)'  # Nome com sobrenome
+    ]
+    for pattern in nome_patterns:
+        nomes = re.findall(pattern, texto_completo, re.IGNORECASE)
+        if nomes:
+            dados['nome'] = nomes[0].strip()
+            break
+    
     # Tentar extrair email
     emails = re.findall(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', texto_completo)
     if emails:
@@ -351,10 +362,11 @@ IMPORTANTE:
         # Adicionar histórico de conversa (se existir)
         if historico_conversa:
             # Limitar a últimas 15 mensagens para não exceder tokens
-            messages.extend(historico_conversa[-15:])
-        
-        # Adicionar pergunta atual
-        messages.append({"role": "user", "content": pergunta})
+            historico_limitado = historico_conversa[-15:]
+            messages.extend(historico_limitado)
+            log(f"📚 Usando histórico: {len(historico_limitado)} mensagens anteriores")
+        else:
+            log("🆕 Primeira mensagem do cliente (sem histórico)")
         
         # Chamar OpenAI
         response = client.chat.completions.create(
@@ -523,12 +535,16 @@ def webhook_prospeccao():
                 "historico": [],
                 "dados": {}
             }
+            log(f"🆕 Novo cliente: {contact_id}")
+        else:
+            log(f"🔄 Cliente recorrente: {contact_id} ({len(conversas_clientes[contact_id]['historico'])} msgs no histórico)")
         
         # Adicionar mensagem do cliente ao histórico
         conversas_clientes[contact_id]["historico"].append({
             "role": "user",
             "content": mensagem_texto
         })
+        log(f"➕ Mensagem adicionada ao histórico")
         
         # Limitar histórico a últimas 20 mensagens
         if len(conversas_clientes[contact_id]["historico"]) > 20:
@@ -537,6 +553,13 @@ def webhook_prospeccao():
         # Extrair dados do lead do histórico
         dados_lead = extrair_dados_conversa(conversas_clientes[contact_id]["historico"])
         conversas_clientes[contact_id]["dados"] = dados_lead
+        
+        # Log dos dados extraídos
+        dados_coletados = [k for k, v in dados_lead.items() if v]
+        if dados_coletados:
+            log(f"📋 Dados coletados até agora: {', '.join(dados_coletados)}")
+        else:
+            log("📋 Nenhum dado coletado ainda")
         
         # Gerar resposta com IA
         resposta = gerar_resposta_ia(
