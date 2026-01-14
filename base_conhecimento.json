@@ -265,4 +265,15 @@
     "respostas": "curtas e objetivas",
     "perguntas": "uma por vez"
   }
-}
+}   "id": "kb_017",
+      "categoria": "comercial",
+      "titulo": "Loja Virtual Escola EAS - Pronta Entrega",
+      "conteudo": "Exceção comercial: Para uniformes da Escola EAS, oferecemos compra via loja virtual com entrega rápida no endereço cadastrado. Esta modalidade NÃO tem pedido mínimo e NÃO segue o prazo padrão de 30 dias. Link da loja: https://escolaalegriadosaber.lojavirtualnuvem.com.br/",
+      "tipo": "comercial",
+      "fonte": "Informação comercial - Escola EAS",
+      "palavras_chave": ["eas", "colégio", "escola", "loja virtual", "pronta entrega", "uniforme escolar", "comprar online", "alegria do saber", "escola alegria do saber"],
+      "data_criacao": "2025-01-13T21:40:00-03:00",
+      "data_atualizacao": "2025-01-13T21:40:00-03:00",
+      "versao": 1,
+      "ativo": true,
+      "prioridade": "alta"
