@@ -343,6 +343,9 @@ Nosso horário de atendimento é de segunda a sexta-feira, das {HORA_INICIO}h à
 Deixe sua mensagem que retornaremos assim que possível!"""
 
 # ========== FUNÇÕES DIGISAC ==========
+# DELAY de 15 segundos para parecer mais humano
+log("⏳ Aguardando 15 segundos para parecer mais humano...")
+time.sleep(15)
 
 def enviar_mensagem_digisac(contact_id, texto):
     """Envia mensagem via API Digisac"""
