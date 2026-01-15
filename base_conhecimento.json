@@ -277,3 +277,16 @@
       "versao": 1,
       "ativo": true,
       "prioridade": "alta"
+
+"id": "kb_017",
+      "categoria": "comercial",
+      "titulo": "Loja Virtual Colégio Interativo - Pronta Entrega",
+      "conteudo": "Exceção comercial: Para uniformes do Colégio Interativo, oferecemos compra via loja virtual com entrega rápida no endereço cadastrado. Esta modalidade NÃO tem pedido mínimo e NÃO segue o prazo padrão de 30 dias. Link da loja: https://colegiointerativo.lojavirtualnuvem.com.br/",
+      "tipo": "comercial",
+      "fonte": "Informação comercial - Escola EAS",
+      "palavras_chave": ["interativo", "colégio", "escola", "loja virtual", "pronta entrega", "uniforme escolar", "comprar online", "colegio interativo", "itabuna"],
+      "data_criacao": "2025-01-13T21:40:00-03:00",
+      "data_atualizacao": "2025-01-13T21:40:00-03:00",
+      "versao": 1,
+      "ativo": true,
+      "prioridade": "alta"
