@@ -290,3 +290,24 @@
       "versao": 1,
       "ativo": true,
       "prioridade": "alta"
+{
+  "id": "kb_018",
+  "categoria": "informacoes_gerais",
+  "titulo": "Endereço e Localização da Difarda",
+  "conteudo": "A Difarda está localizada em Imperatriz - MA, na Rua Eduardo Gomes, 2245, bairro Maranhão Novo. O endereço completo é: R. Eduardo Gomes, 2245 - Maranhão Novo, Imperatriz - MA. Para facilitar, você pode acessar nossa localização no Google Maps através deste link: https://maps.app.goo.gl/g92MZGtzoM2CqVM9A. Estamos em uma região de fácil acesso na cidade.",
+  "palavras_chave": [
+    "endereço",
+    "localização",
+    "onde fica",
+    "como chegar",
+    "imperatriz",
+    "maranhão novo",
+    "eduardo gomes",
+    "maps",
+    "google maps",
+    "rua",
+    "bairro"
+  ],
+  "prioridade": "alta",
+  "data_atualizacao": "2026-01-14"
+}
