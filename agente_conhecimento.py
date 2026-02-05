@@ -197,6 +197,57 @@ def registrar_uso_conhecimento(conhecimento_id):
 
 # ========== FUNÇÕES DE IA (OPENAI) ==========
 
+def detectar_contexto_cliente(historico_conversa):
+    """
+    Detecta se o cliente é B2B (empresa) ou B2C (pai de aluno)
+    Retorna: 'b2b', 'b2c' ou 'indefinido'
+    """
+    if not historico_conversa:
+        return 'indefinido'
+    
+    # Juntar todo o histórico em texto único
+    texto_completo = " ".join([msg.get('content', '').lower() for msg in historico_conversa if msg.get('role') == 'user'])
+    
+    # Escolas B2C (pais de alunos)
+    escolas_b2c = ['interativo', 'querubins', 'alegria do saber', 'elelyon', 'el elyon']
+    
+    # Palavras-chave B2C (pais)
+    palavras_b2c = [
+        'meu filho', 'minha filha', 'filho estuda', 'filha estuda',
+        'pai', 'mãe', 'responsável pelo aluno', 'uniforme do meu', 'uniforme da minha',
+        'preciso comprar uniforme', 'onde compro uniforme', 'tamanho do uniforme',
+        'série', 'ano escolar', 'aluno', 'estudante', 'criança'
+    ]
+    
+    # Palavras-chave B2B (empresas)
+    palavras_b2b = [
+        'empresa', 'negócio', 'rede', 'filial', 'funcionários', 'colaboradores',
+        'equipe', 'cnpj', 'razão social', 'gestor', 'lojas', 'unidades',
+        'estabelecimento', 'pedido mínimo', 'orçamento', 'proposta comercial',
+        'farmácia', 'ótica', 'clínica', 'restaurante', 'hotel'
+    ]
+    
+    # Verificar se menciona escola B2C
+    for escola in escolas_b2c:
+        if escola in texto_completo:
+            log(f"👨‍👩‍👧 Detectado: PAI/MÃE (escola: {escola})")
+            return 'b2c'
+    
+    # Contar palavras-chave
+    count_b2c = sum(1 for palavra in palavras_b2c if palavra in texto_completo)
+    count_b2b = sum(1 for palavra in palavras_b2b if palavra in texto_completo)
+    
+    # Decidir com base na contagem
+    if count_b2c > count_b2b:
+        log(f"👨‍👩‍👧 Detectado: PAI/MÃE (palavras-chave: {count_b2c})")
+        return 'b2c'
+    elif count_b2b > count_b2c:
+        log(f"🏢 Detectado: EMPRESA (palavras-chave: {count_b2b})")
+        return 'b2b'
+    else:
+        log("❓ Tipo não detectado, assumindo EMPRESA (padrão)")
+        return 'b2b'  # Padrão é B2B
+
 def gerar_resposta_ia(pergunta, contexto_conhecimento, historico_conversa=None):
     """
     Gera resposta usando OpenAI GPT-4
@@ -209,6 +260,9 @@ def gerar_resposta_ia(pergunta, contexto_conhecimento, historico_conversa=None):
     try:
         client = OpenAI(api_key=OPENAI_API_KEY)
         
+        # Detectar tipo de cliente (B2B ou B2C)
+        tipo_cliente = detectar_contexto_cliente(historico_conversa)
+        
         # Montar contexto a partir do conhecimento encontrado
         contexto_texto = ""
         if contexto_conhecimento:
@@ -217,6 +271,15 @@ def gerar_resposta_ia(pergunta, contexto_conhecimento, historico_conversa=None):
                 titulo = conhecimento.get('titulo', 'Sem título')
                 conteudo = conhecimento.get('conteudo', '')
                 contexto_texto += f"{i}. {titulo}\n{conteudo}\n\n"
+        
+        # Adicionar contexto do tipo de cliente
+        contexto_cliente = ""
+        if tipo_cliente == 'b2c':
+            contexto_cliente = """\n\nCONTEXTO DO CLIENTE:\n
+👨‍👩‍👧 TIPO: PAI/MÃE DE ALUNO (B2C)\n\n⚠️ IMPORTANTE:\n- NÃO peça CNPJ (pais não têm)\n- NÃO pergunte sobre quantidade de funcionários\n- NÃO fale sobre pedido mínimo de 80 peças\n- Pergunte: nome do aluno, série, tamanho, quando precisa\n- Direcione para loja virtual da escola (se disponível na base)\n"""
+        elif tipo_cliente == 'b2b':
+            contexto_cliente = """\n\nCONTEXTO DO CLIENTE:\n
+🏢 TIPO: EMPRESA (B2B)\n\n✅ PODE PERGUNTAR:\n- Segmento (farmácia, escola, ótica, etc)\n- Porte (nº de funcionários/lojas)\n- CNPJ\n- Quantidade de peças\n- Modelos desejados\n- Prazo necessário\n\n⚠️ LEMBRAR:\n- Pedido mínimo: 80 peças\n- Prazo de entrega: 30 dias úteis\n"""
         
         # Prompt do sistema
         system_prompt = f"""Você é Manu, assistente da Difarda Moda Corporativa, especializada em moda corporativa.
@@ -239,18 +302,20 @@ PERSONALIDADE E TOM:
 - Seja direto e objetivo
 - Trate o cliente por "você"
 
-{contexto_texto}
+{contexto_texto}{contexto_cliente}
 
 REGRAS CRÍTICAS (SEMPRE VERIFICAR):
-1. PEDIDO MÍNIMO: 80 peças
-   - Se cliente mencionar quantidade MENOR que 80, SEMPRE informe: "Nosso pedido mínimo é de 80 peças para garantir viabilidade de produção e melhores condições comerciais."
+1. PEDIDO MÍNIMO: 80 peças (APENAS PARA B2B - EMPRESAS)
+   - Se cliente for EMPRESA (B2B) e mencionar quantidade MENOR que 80, SEMPRE informe: "Nosso pedido mínimo é de 80 peças para garantir viabilidade de produção e melhores condições comerciais."
+   - Se cliente for PAI/MÃE (B2C), NÃO mencione pedido mínimo
    - Seja direto e claro sobre essa regra
 
 2. PRAZO DE ENTREGA: 30 dias úteis
    - Sempre mencione quando cliente perguntar sobre prazo ou entrega
 
-3. ORÇAMENTO: Precisa de modelo + quantidade + CNPJ
-   - Se cliente pedir orçamento, pergunte essas 3 informações
+3. ORÇAMENTO:
+   - B2B (EMPRESA): Precisa de modelo + quantidade + CNPJ
+   - B2C (PAI/MÃE): Direcione para loja virtual da escola (não peça CNPJ!)
 
 4. HORÁRIO: Segunda a Sexta, 8h às 18h
    - Fora desse horário, apenas informe que empresa está fechada
