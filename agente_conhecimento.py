@@ -1,12 +1,10 @@
-# Agente Digisac + OpenAI - Base de Conhecimento Versionada
+# Agente Digisac + OpenAI - PROSPECÇÃO (Farmácias e Escolas)
 import pytz
 import time
 import requests
 import json
 import hashlib
 import os
-import random
-import threading
 from datetime import datetime
 from flask import Flask, request, jsonify
 from openai import OpenAI
@@ -17,12 +15,16 @@ from openai import OpenAI
 DIGISAC_URL = "https://difardamodacorporativa.digisac.me"
 DIGISAC_TOKEN = "8177228f681aa4c27ee4b5e585fe1eaddb7098a6"
 
+# Número de telefone específico para prospecção (CONFIGURAR)
+TELEFONE_PROSPECCAO = os.getenv('TELEFONE_PROSPECCAO', '')  # Ex: "5599988206465"
+
 # OpenAI - Usa variável de ambiente (configurar no Render)
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
 
 # Arquivos
-ARQUIVO_CONHECIMENTO = "base_conhecimento.json"
-ARQUIVO_LOG = "agente_log.txt"
+ARQUIVO_CONHECIMENTO = "base_conhecimento_prospeccao.json"
+ARQUIVO_LOG = "agente_prospeccao_log.txt"
+ARQUIVO_LEADS = "leads_qualificados.json"
 
 # Controle de mensagens processadas
 mensagens_processadas = {}  # {message_id: timestamp}
@@ -35,15 +37,15 @@ TIMEZONE = pytz.timezone('America/Sao_Paulo')
 
 app = Flask(__name__)
 
-# Memória de conversas por cliente (armazena histórico)
-conversas_clientes = {}  # {contact_id: [{"role": "user", "content": "..."}, ...]}
+# Memória de conversas por cliente (armazena histórico + dados coletados)
+conversas_clientes = {}  # {contact_id: {"historico": [...], "dados": {...}}}
 
 # ========== FUNÇÕES DE LOG ==========
 
 def log(mensagem):
     """Registra mensagem no log com timestamp"""
     timestamp = datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
-    log_msg = f"[{timestamp}] {mensagem}"
+    log_msg = f"[{timestamp}] [PROSPECÇÃO] {mensagem}"
     print(log_msg)
     
     try:
@@ -66,18 +68,6 @@ def carregar_conhecimento():
         log(f"❌ Erro ao carregar conhecimento: {e}")
         return {"conhecimento": [], "estatisticas": {}}
 
-def salvar_conhecimento(dados):
-    """Salva base de conhecimento no arquivo JSON"""
-    try:
-        dados['ultima_atualizacao'] = datetime.now(TIMEZONE).isoformat()
-        with open(ARQUIVO_CONHECIMENTO, 'w', encoding='utf-8') as f:
-            json.dump(dados, f, indent=2, ensure_ascii=False)
-        log("✅ Base de conhecimento salva")
-        return True
-    except Exception as e:
-        log(f"❌ Erro ao salvar conhecimento: {e}")
-        return False
-
 def buscar_conhecimento(pergunta, max_resultados=None):
     """Busca conhecimentos relevantes na base - CONSULTA TODA A BASE sem limite de resultados"""
     base = carregar_conhecimento()
@@ -94,16 +84,15 @@ def buscar_conhecimento(pergunta, max_resultados=None):
     pergunta_lower = pergunta.lower()
     palavras_pergunta = pergunta_lower.split()
     
-    # Identificar se é pergunta comercial (preço, pedido, orçamento, prazo, escola, etc)
-    palavras_comerciais = ['preço', 'valor', 'quanto', 'custa', 'pedido', 'orçamento', 
-                           'prazo', 'entrega', 'demora', 'peças', 'quantidade', 'minimo',
-                           'comprar', 'contratar', 'pagar', 'pagamento', 'escola', 'colégio',
-                           'elelyon', 'querubins', 'uniforme escolar', 'loja', 'site']
-    eh_comercial = any(palavra in pergunta_lower for palavra in palavras_comerciais)
+    # Identificar tipo de lead (farmácia ou escola)
+    palavras_farmacias = ['farmácia', 'farmacia', 'drogaria', 'farmarcas', 'ultrapopular', 'maxipopular']
+    palavras_escolas = ['escola', 'colégio', 'colegio', 'alunos', 'educação', 'ensino']
+    
+    eh_farmacia = any(palavra in pergunta_lower for palavra in palavras_farmacias)
+    eh_escola = any(palavra in pergunta_lower for palavra in palavras_escolas)
     
     # Calcular relevância de cada registro
     resultados = []
-    regras_comerciais = []  # Separar regras comerciais críticas
     
     for conhecimento in ativos:
         score = 0
@@ -115,7 +104,7 @@ def buscar_conhecimento(pergunta, max_resultados=None):
         palavras_chave = conhecimento.get('palavras_chave', [])
         for palavra in palavras_chave:
             if palavra.lower() in pergunta_lower:
-                score += 15  # Aumentado de 10 para 15
+                score += 15
         
         # Pontuação por categoria
         if categoria.lower() in pergunta_lower:
@@ -124,83 +113,214 @@ def buscar_conhecimento(pergunta, max_resultados=None):
         # Pontuação por título (PESO MÉDIO-ALTO)
         for palavra in palavras_pergunta:
             if len(palavra) > 3 and palavra in titulo:
-                score += 12  # Aumentado de 3 para 12
+                score += 12
         
         # Pontuação por conteúdo (PESO MÉDIO)
         for palavra in palavras_pergunta:
             if len(palavra) > 3 and palavra in conteudo:
-                score += 8  # Novo: busca no conteúdo
+                score += 8
         
         # Pontuação por prioridade
         prioridade = conhecimento.get('prioridade', 'media')
         if prioridade == 'alta':
-            score += 5  # Aumentado de 2 para 5
+            score += 5
         
-        # BOOST para regras comerciais críticas
-        if categoria == 'comercial':
-            score += 20  # Aumentado de 15 para 20
-            regras_comerciais.append({
+        # BOOST para categoria específica do lead
+        if eh_farmacia and categoria == 'farmacias':
+            score += 25
+        if eh_escola and categoria == 'escolas':
+            score += 25
+        
+        # SEMPRE incluir registros de qualificação e processo
+        if categoria in ['qualificacao', 'processo']:
+            score += 15
+        
+        # Incluir TODOS os registros com score > 0
+        if score > 0:
+            resultados.append({
                 'conhecimento': conhecimento,
                 'score': score,
                 'data': conhecimento.get('data_atualizacao')
             })
-        
-        # Incluir TODOS os registros com score > 0 OU comerciais em perguntas comerciais
-        if score > 0 or (eh_comercial and categoria == 'comercial'):
-            resultados.append({
-                'conhecimento': conhecimento,
-                'score': score if score > 0 else 10,  # Mínimo 10 para comerciais
-                'data': conhecimento.get('data_atualizacao')
-            })
-    
-    # Se for pergunta comercial, SEMPRE incluir regras comerciais críticas
-    if eh_comercial and regras_comerciais:
-        # Garantir que pedido mínimo e prazo estejam no resultado
-        ids_criticos = ['kb_005', 'kb_006', 'kb_007']  # Pedido mínimo, Prazo, Orçamento
-        for id_critico in ids_criticos:
-            conhecimento_critico = next((c for c in ativos if c.get('id') == id_critico), None)
-            if conhecimento_critico:
-                # Verificar se já está nos resultados
-                if not any(r['conhecimento'].get('id') == id_critico for r in resultados):
-                    resultados.append({
-                        'conhecimento': conhecimento_critico,
-                        'score': 100,  # Score altíssimo para garantir inclusão
-                        'data': conhecimento_critico.get('data_atualizacao')
-                    })
     
     # Ordenar por score (relevância) e depois por data (mais recente)
     resultados.sort(key=lambda x: (x['score'], x['data']), reverse=True)
     
     # Retornar TODOS os resultados ordenados (sem limite)
-    log(f"🔍 Busca: '{pergunta[:50]}...' → {len(resultados)} resultados encontrados (comercial: {eh_comercial})")
+    log(f"🔍 Busca: '{pergunta[:50]}...' → {len(resultados)} resultados (farmácia: {eh_farmacia}, escola: {eh_escola})")
     
     return [r['conhecimento'] for r in resultados]
 
-def registrar_uso_conhecimento(conhecimento_id):
-    """Registra que um conhecimento foi usado"""
-    base = carregar_conhecimento()
-    
-    # Atualizar estatísticas
-    if 'uso_conhecimento' not in base:
-        base['uso_conhecimento'] = {}
-    
-    if conhecimento_id not in base['uso_conhecimento']:
-        base['uso_conhecimento'][conhecimento_id] = {
-            'total_usos': 0,
-            'ultimo_uso': None
+# ========== FUNÇÕES DE LEADS ==========
+
+def carregar_leads():
+    """Carrega leads qualificados do arquivo JSON"""
+    try:
+        with open(ARQUIVO_LEADS, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {"leads": []}
+    except Exception as e:
+        log(f"❌ Erro ao carregar leads: {e}")
+        return {"leads": []}
+
+def salvar_lead(contact_id, dados_lead):
+    """Salva lead qualificado no arquivo JSON"""
+    try:
+        leads_data = carregar_leads()
+        
+        lead = {
+            "contact_id": contact_id,
+            "data_qualificacao": datetime.now(TIMEZONE).isoformat(),
+            **dados_lead
         }
+        
+        leads_data['leads'].append(lead)
+        
+        with open(ARQUIVO_LEADS, 'w', encoding='utf-8') as f:
+            json.dump(leads_data, f, indent=2, ensure_ascii=False)
+        
+        log(f"✅ Lead salvo: {dados_lead.get('nome', 'N/A')} - {dados_lead.get('segmento', 'N/A')}")
+        return True
+    except Exception as e:
+        log(f"❌ Erro ao salvar lead: {e}")
+        return False
+
+def extrair_dados_conversa(historico):
+    """Extrai dados do lead a partir do histórico de conversa"""
+    dados = {
+        "tipo_cliente": None,  # 'b2b' (empresa) ou 'b2c' (pai de aluno)
+        "segmento": None,  # qualquer segmento (farmacia, escola, otica, restaurante, etc)
+        "escola_referencia": None,  # nome da escola (se for pai)
+        "porte": None,  # número de funcionários ou alunos
+        "nome": None,
+        "email": None,
+        "cnpj": None,
+        "reuniao_agendada": False
+    }
     
-    base['uso_conhecimento'][conhecimento_id]['total_usos'] += 1
-    base['uso_conhecimento'][conhecimento_id]['ultimo_uso'] = datetime.now(TIMEZONE).isoformat()
+    # Analisar histórico para extrair informações
+    texto_completo = " ".join([msg.get('content', '') for msg in historico]).lower()
     
-    salvar_conhecimento(base)
+    import re
+    
+    # ========== DETECTAR TIPO DE CLIENTE (B2B ou B2C) ==========
+    
+    # Escolas que atendemos (B2C - pais de alunos)
+    escolas_b2c = [
+        'interativo', 'querubins', 'alegria do saber', 'elelyon', 'el elyon'
+    ]
+    
+    # Palavras que indicam PAI/MÃE (B2C)
+    palavras_b2c = [
+        'meu filho', 'minha filha', 'meu aluno', 'minha aluna',
+        'filho estuda', 'filha estuda', 'criança estuda',
+        'pai', 'mãe', 'responsável pelo aluno',
+        'uniforme do meu', 'uniforme da minha',
+        'preciso comprar uniforme', 'onde compro uniforme',
+        'tamanho do uniforme', 'série', 'ano escolar'
+    ]
+    
+    # Palavras que indicam EMPRESA (B2B)
+    palavras_b2b = [
+        'empresa', 'negócio', 'rede', 'filial', 'matriz',
+        'funcionários', 'colaboradores', 'equipe',
+        'cnpj', 'razão social', 'gestor', 'gerente',
+        'lojas', 'unidades', 'estabelecimento',
+        'pedido mínimo', 'orçamento', 'proposta comercial'
+    ]
+    
+    # Detectar se menciona escola específica
+    for escola in escolas_b2c:
+        if escola in texto_completo:
+            dados['tipo_cliente'] = 'b2c'
+            dados['escola_referencia'] = escola
+            log(f"👨‍👩‍👧 Detectado: PAI/MÃE (escola: {escola})")
+            break
+    
+    # Se não detectou escola, verificar palavras-chave
+    if not dados['tipo_cliente']:
+        # Contar palavras B2C vs B2B
+        count_b2c = sum(1 for palavra in palavras_b2c if palavra in texto_completo)
+        count_b2b = sum(1 for palavra in palavras_b2b if palavra in texto_completo)
+        
+        if count_b2c > count_b2b:
+            dados['tipo_cliente'] = 'b2c'
+            log(f"👨‍👩‍👧 Detectado: PAI/MÃE (palavras-chave: {count_b2c})")
+        elif count_b2b > 0:
+            dados['tipo_cliente'] = 'b2b'
+            log(f"🏢 Detectado: EMPRESA (palavras-chave: {count_b2b})")
+        else:
+            # Se não tem certeza, assume B2B (mais seguro)
+            dados['tipo_cliente'] = 'b2b'
+            log("❓ Tipo não detectado, assumindo EMPRESA (padrão)")
+    
+    # ========== IDENTIFICAR SEGMENTO ==========
+    segmentos_conhecidos = {
+        'farmacia': ['farmácia', 'farmacia', 'drogaria', 'farmarcas'],
+        'escola': ['escola', 'colégio', 'colegio', 'educação', 'ensino'],
+        'otica': ['ótica', 'otica', 'óptica', 'optica'],
+        'restaurante': ['restaurante', 'lanchonete', 'bar', 'café'],
+        'hotel': ['hotel', 'pousada', 'hostel'],
+        'clinica': ['clínica', 'clinica', 'consultório', 'consultorio'],
+        'industria': ['indústria', 'industria', 'fábrica', 'fabrica'],
+        'comercio': ['loja', 'comércio', 'comercio', 'varejo']
+    }
+    
+    # Tentar identificar segmento
+    for segmento, palavras in segmentos_conhecidos.items():
+        if any(palavra in texto_completo for palavra in palavras):
+            dados['segmento'] = segmento
+            break
+    
+    # Se não identificou nenhum segmento conhecido, tenta extrair da conversa
+    if not dados['segmento']:
+        # Procura por padrões como "tenho uma [segmento]", "trabalho em [segmento]"
+        patterns = [
+            r'(?:tenho|trabalho|sou de|atuo em|gerencio)\s+(?:uma?|um)\s+([\w]+)',
+            r'(?:rede de|grupo de)\s+([\w]+)'
+        ]
+        for pattern in patterns:
+            matches = re.findall(pattern, texto_completo)
+            if matches:
+                dados['segmento'] = matches[0]
+                break
+    
+    # Tentar extrair números (porte)
+    import re
+    numeros = re.findall(r'\b\d+\b', texto_completo)
+    if numeros:
+        dados['porte'] = numeros[0]  # Primeiro número encontrado
+    
+    # Tentar extrair nome (procurar por padrões como "meu nome é", "sou", "me chamo")
+    nome_patterns = [
+        r'(?:meu nome é|me chamo|sou o|sou a|sou)\s+([A-ZÁÉÍÓÚ][a-záéíóú]+(?:\s+[A-ZÁÉÍÓÚ][a-záéíóú]+)*)',
+        r'([A-ZÁÉÍÓÚ][a-záéíóú]+(?:\s+[A-ZÁÉÍÓÚ][a-záéíóú]+)+)(?=\s*,|\s*\.|$)'  # Nome com sobrenome
+    ]
+    for pattern in nome_patterns:
+        nomes = re.findall(pattern, texto_completo, re.IGNORECASE)
+        if nomes:
+            dados['nome'] = nomes[0].strip()
+            break
+    
+    # Tentar extrair email
+    emails = re.findall(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', texto_completo)
+    if emails:
+        dados['email'] = emails[0]
+    
+    # Tentar extrair CNPJ
+    cnpjs = re.findall(r'\b\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}\b', texto_completo)
+    if cnpjs:
+        dados['cnpj'] = cnpjs[0]
+    
+    return dados
 
 # ========== FUNÇÕES DE IA (OPENAI) ==========
 
-def gerar_resposta_ia(pergunta, contexto_conhecimento, historico_conversa=None):
+def gerar_resposta_ia(pergunta, contexto_conhecimento, historico_conversa=None, dados_lead=None):
     """
-    Gera resposta usando OpenAI GPT-4
-    Usa conhecimento da base como contexto + histórico da conversa
+    Gera resposta usando OpenAI GPT-4o-mini
+    Usa conhecimento da base como contexto + histórico da conversa + dados já coletados
     """
     if not OPENAI_API_KEY or OPENAI_API_KEY == "":
         log("⚠️ OpenAI API Key não configurada")
@@ -218,97 +338,230 @@ def gerar_resposta_ia(pergunta, contexto_conhecimento, historico_conversa=None):
                 conteudo = conhecimento.get('conteudo', '')
                 contexto_texto += f"{i}. {titulo}\n{conteudo}\n\n"
         
+        # Informações sobre dados já coletados
+        dados_coletados = ""
+        if dados_lead:
+            dados_coletados = "\n\nCONTEXTO DO CLIENTE:\n"
+            
+            # TIPO DE CLIENTE (CRUCIAL!)
+            tipo_cliente = dados_lead.get('tipo_cliente')
+            if tipo_cliente == 'b2c':
+                dados_coletados += "\n👨‍👩‍👧 TIPO: PAI/MÃE DE ALUNO (B2C)\n"
+                if dados_lead.get('escola_referencia'):
+                    dados_coletados += f"- Escola: {dados_lead['escola_referencia']}\n"
+                dados_coletados += "\n⚠️ IMPORTANTE:\n"
+                dados_coletados += "- NÃO peça CNPJ (pais não têm)\n"
+                dados_coletados += "- NÃO pergunte sobre quantidade de funcionários\n"
+                dados_coletados += "- NÃO fale sobre pedido mínimo de 80 peças\n"
+                dados_coletados += "- Pergunte: nome do aluno, série, tamanho, quando precisa\n"
+                dados_coletados += "- Direcione para loja virtual da escola\n\n"
+            elif tipo_cliente == 'b2b':
+                dados_coletados += "\n🏢 TIPO: EMPRESA (B2B)\n"
+                dados_coletados += "- Pedido mínimo: 80 peças\n"
+                dados_coletados += "- Objetivo: Qualificar e agendar reunião online\n\n"
+            
+            # Dados já coletados
+            dados_coletados += "DADOS JÁ COLETADOS:\n"
+            if dados_lead.get('segmento'):
+                dados_coletados += f"- Segmento: {dados_lead['segmento']}\n"
+            if dados_lead.get('porte'):
+                dados_coletados += f"- Porte: {dados_lead['porte']}\n"
+            if dados_lead.get('nome'):
+                dados_coletados += f"- Nome: {dados_lead['nome']}\n"
+            if dados_lead.get('email'):
+                dados_coletados += f"- Email: {dados_lead['email']}\n"
+            if dados_lead.get('cnpj'):
+                dados_coletados += f"- CNPJ: {dados_lead['cnpj']}\n"
+            dados_coletados += "\n⚠️ NÃO PEÇA NOVAMENTE informações já coletadas!\n"
+        
         # Prompt do sistema
-        system_prompt = f"""Você é Manu, assistente da Difarda Moda Corporativa, especializada em moda corporativa.
+        system_prompt = f"""Você é Manu, consultora da Difarda Moda Corporativa.
 
-COMPORTAMENTO:
-- Não precisa se identificar como virtual, apenas assistente
-- **RESPOSTAS CURTAS**: MÁXIMO 2-3 linhas (40-60 palavras)
-- Entre em detalhes apenas quando necessário
-- Faça UMA pergunta por vez
-- **LEIA O HISTÓRICO**: Você tem acesso às mensagens anteriores do cliente
-- **NÃO REPITA**: Se já disse algo, não repita
-- **ENTENDA CONTEXTO**: Se cliente já respondeu algo, não pergunte novamente
+NOSSO FOCO PRINCIPAL: Uniformes para farmácias e escolas privadas (temos cases de sucesso e soluções específicas).
+MAS TAMBÉM ATENDEMOS: Óticas, restaurantes, hotéis, clínicas, indústrias e comércio em geral.
 
-PERSONALIDADE E TOM:
-- Cordial, empático e profissional
-- Linguagem natural e humanizada (sem menus numerados)
-- Proativo em oferecer ajuda (moderadamente, sem forçar)
-- EVITE o uso de emojis
-- EVITE asteriscos e negrito
-- Seja direto e objetivo
-- Trate o cliente por "você"
+OBJETIVO:
+Conversar naturalmente com o lead, entender suas necessidades e, se houver fit, agendar uma reunião online (B2B) OU direcionar para loja virtual (B2C).
+
+⚠️ ATENÇÃO: Temos DOIS tipos de clientes diferentes!
+
+🏢 **B2B (EMPRESAS)**: Farmácias, escolas (instituição), óticas, restaurantes, etc
+- Pedido mínimo: 80 peças
+- Objetivo: Qualificar e agendar reunião online
+- Perguntas: Segmento, porte, nome responsável, email, CNPJ
+
+👨‍👩‍👧 **B2C (PAIS DE ALUNOS)**: Escolas Interativo, Querubins, Alegria do Saber, Elelyon
+- Compra individual de uniformes escolares
+- Objetivo: Direcionar para loja virtual da escola
+- Perguntas: Nome do aluno, série, tamanho, quando precisa
+- NÃO peça: CNPJ, quantidade de funcionários, pedido mínimo
+
+TOM E PERSONALIDADE:
+- **ACOLHEDORA e EDUCADA**: Sempre cordial e respeitosa
+- **CURIOSA de forma NATURAL**: Faça perguntas como se estivesse genuinamente interessada em ajudar
+- **CONSULTIVA**: Primeiro entenda, depois apresente soluções
+- **PACIENTE**: Não tenha pressa, deixe a conversa fluir
+- **HUMANA**: Converse como uma pessoa real, não como um robô
+- **ADAPTATIVA**: Reconheça o segmento do cliente e adapte a conversa
+
+COMO CONVERSAR:
+- **RESPOSTAS CURTAS**: 1-2 linhas (30-50 palavras)
+- **UMA pergunta por vez**: Nunca bombardeie o cliente
+- **LEIA O HISTÓRICO**: Reconheça o que já foi dito
+- **SEJA NATURAL**: Use expressões como "Que legal!", "Entendo", "Interessante!"
+- **GUIE SUAVEMENTE**: Faça perguntas que naturalmente levem às informações que precisa
+- EVITE emojis e asteriscos
+
+DADOS QUE VOCÊ PRECISA COLETAR:
+
+**Se for B2B (EMPRESA):**
+1. Segmento (farmácia, escola, ótica, etc)
+2. Porte (nº de funcionários/lojas)
+3. Nome do responsável
+4. Email
+5. CNPJ
+6. Demanda atual (como funciona hoje, prazos, se já tem modelo)
+
+**Se for B2C (PAI/MÃE):**
+1. Nome do aluno
+2. Série/ano escolar
+3. Tamanho do uniforme (se souber)
+4. Quando precisa receber
+5. Link da loja virtual da escola
+
+REGRAS CRÍTICAS:
+1. **INTELIGÊNCIA CONVERSACIONAL**: NÃO faça todas as perguntas de uma vez!
+2. **CONTEXTO É TUDO**: 
+   - LEIA O HISTÓRICO antes de responder
+   - Se cliente já disse algo, RECONHEÇA e continue de onde parou
+   - NUNCA peça informação que já foi dada
+   - Se cliente disse "2 lojas", NÃO pergunte "quantas lojas?"
+3. **ADAPTE-SE AO SEGMENTO**:
+   - Se é farmácia ou escola: Mostre entusiasmo (temos expertise!)
+   - Se é outro segmento: Seja acolhedora e descubra as necessidades
+4. **QUALIFICAÇÃO**: Identifique se está no perfil ideal antes de agendar reunião
+5. **OBJETIVO**: Após coletar os dados, SEMPRE ofereça agendamento de reunião online
+
+PERFIL IDEAL:
+- Farmácias: Redes com múltiplas lojas OU 10+ funcionários (PRIORIDADE!)
+- Escolas: Qualquer porte (temos soluções para pequenas e grandes) (PRIORIDADE!)
+- Outros segmentos: 20+ funcionários ou múltiplas unidades
 
 {contexto_texto}
 
-REGRAS CRÍTICAS (SEMPRE VERIFICAR):
-1. PEDIDO MÍNIMO: 80 peças
-   - Se cliente mencionar quantidade MENOR que 80, SEMPRE informe: "Nosso pedido mínimo é de 80 peças para garantir viabilidade de produção e melhores condições comerciais."
-   - Seja direto e claro sobre essa regra
+{dados_coletados}
 
-2. PRAZO DE ENTREGA: 30 dias úteis
-   - Sempre mencione quando cliente perguntar sobre prazo ou entrega
+EXEMPLOS DE ABORDAGEM ACOLHEDORA:
 
-3. ORÇAMENTO: Precisa de modelo + quantidade + CNPJ
-   - Se cliente pedir orçamento, pergunte essas 3 informações
+=== EXEMPLO B2B (EMPRESA) ===
 
-4. HORÁRIO: Segunda a Sexta, 8h às 18h
-   - Fora desse horário, apenas informe que empresa está fechada
+Cliente: "Olá"
+Você: "Oi! Tudo bem? Como posso te ajudar hoje?"
 
-EXEMPLOS DE RESPOSTAS CORRETAS:
+Cliente: "Tenho uma rede de farmácias"
+Você: "Que legal! Vocês trabalham com uniformes para a equipe?"
 
-Cliente: "Quero fazer 50 camisas"
-Você: "Nosso pedido mínimo é de 80 peças para garantir viabilidade de produção e melhores condições comerciais. Você consegue aumentar a quantidade?"
+Cliente: "Sim, mas é complicado"
+Você: "Imagino... O que costuma ser mais desafiador pra vocês?"
 
-Cliente: "Quanto custa?"
-Você: "Para preparar um orçamento personalizado, preciso saber: qual modelo de uniforme você procura, a quantidade de peças e o CNPJ da empresa. Pode me passar essas informações?"
+Cliente: "Sempre falta uniforme quando entra gente nova"
+Você: "Entendo, isso é bem comum mesmo. Quantas lojas vocês têm?"
 
-Cliente: "Quanto tempo demora?"
-Você: "O prazo médio de entrega é de 30 dias úteis após aprovação do pedido e confirmação de pagamento."
+Cliente: "5 lojas"
+Você: "Legal! Trabalhamos com várias redes e temos um modelo de planejamento anual que resolve isso. Posso te contar mais?"
 
-EXEMPLOS DE USO DE CONTEXTO (IMPORTANTE!):
+Cliente: "Pode sim"
+Você: "Perfeito! Pra eu preparar algo mais personalizado, qual seu nome?"
 
-Cliente: "Quero 15 camisetas e 28 calças"
-Você: "Nosso pedido mínimo é de 80 peças. Você consegue aumentar a quantidade?"
+---
 
-Cliente (próxima mensagem): "Pode ser 40 camisetas e 40 calças"
-Você: "Perfeito! 80 peças atende nosso mínimo. Qual modelo de uniforme você procura?"
-❌ NÃO REPITA: "Nosso pedido mínimo é de 80 peças..." (cliente já aumentou!)
+Cliente: "Sou de uma escola"
+Você: "Que bacana! É escola particular?"
 
-Cliente: "Quero orçamento"
-Você: "Para preparar o orçamento, preciso do modelo, quantidade e CNPJ. Pode me passar?"
+Cliente: "Sim"
+Você: "Legal! Quantos alunos vocês têm mais ou menos?"
 
-Cliente (próxima mensagem): "Camisa polo, 100 peças"
-Você: "Ótimo! Só falta o CNPJ da empresa para eu preparar o orçamento."
-❌ NÃO REPITA: "Preciso do modelo, quantidade e CNPJ" (cliente já passou 2 de 3!)
+Cliente: "Uns 300"
+Você: "Entendi! Vocês já trabalham com uniformes ou estão começando agora?"
 
-QUANDO NÃO SOUBER:
-- NUNCA invente preços, prazos específicos ou disponibilidade
-- Responda: "Ótima pergunta! Deixa eu verificar com minha equipe e já te retorno, ok?"
+=== EXEMPLO B2C (PAI/MÃE) ===
 
-IMPORTANTE: 
-- Use APENAS as informações da base de conhecimento acima
-- SEMPRE verifique se a pergunta envolve quantidade de peças e compare com o mínimo de 80
-- Seja assertivo e direto ao informar regras comerciais
-- Não peça mais informações se a base já tem a resposta"""
+Cliente: "Olá, preciso comprar uniforme"
+Você: "Oi! Tudo bem? É uniforme escolar?"
+
+Cliente: "Sim, do Colégio Elelyon"
+Você: "Que legal! Qual o nome do aluno?"
+
+Cliente: "Maria Silva"
+Você: "E ela está em qual série?"
+
+Cliente: "5º ano"
+Você: "Perfeito! Você pode comprar direto pela loja virtual do colégio. Já tem o link?"
+
+Cliente: "Não"
+Você: "Sem problema! Vou te passar: [link da loja]. Lá você encontra todos os modelos disponíveis pro Elelyon. Precisa de mais alguma coisa?"
+
+---
+
+EXEMPLO B2C - OUTRO COLEGIO:
+
+Cliente: "Meu filho estuda no Interativo"
+Você: "Que bacana! Qual o nome dele?"
+
+Cliente: "Pedro"
+Você: "E ele está em qual ano?"
+
+Cliente: "2º ano do ensino médio"
+Você: "Legal! Pro Colégio Interativo, a compra é feita pela loja virtual. Você já acessou?"
+
+---
+
+Cliente: "Uniforme para loja"
+Você: "Oi! Tudo bem? Que tipo de loja você tem?"
+
+Cliente: "Ótica"
+Você: "Que legal! Quantas lojas vocês têm?"
+
+Cliente: "2 loja"
+Você: "Entendi! E como funciona hoje com os uniformes da equipe?"
+
+---
+
+EXEMPLO DE COMO NÃO FAZER (ERRADO!):
+
+Cliente: "Ótica"
+Bot: "Entendi! Você está falando sobre uniformes, certo? Em qual segmento você atua? É uma farmácia ou uma escola?" ❌ ERRADO!
+
+Cliente: "2 lojas"
+Bot: "Quantas lojas vocês têm?" ❌ ERRADO! Cliente acabou de dizer!
+
+QUANDO TIVER TODOS OS DADOS:
+"Perfeito, [Nome]! Olha, acho que temos uma solução bem interessante pro seu caso. Que tal a gente marcar uma conversa online pra eu te apresentar nossa equipe e a gente ver isso com mais calma? Você tem disponibilidade essa semana?"
+
+IMPORTANTE:
+- Use APENAS as informações da base de conhecimento
+- Seja consultivo mas OBJETIVO
+- Não invente informações técnicas ou comerciais
+- Foque em QUALIFICAR e AGENDAR"""
 
         # Montar mensagens com histórico
         messages = [{"role": "system", "content": system_prompt}]
         
         # Adicionar histórico de conversa (se existir)
         if historico_conversa:
-            # Limitar a últimas 10 mensagens para não exceder tokens
-            messages.extend(historico_conversa[-10:])
-        
-        # Adicionar pergunta atual
-        messages.append({"role": "user", "content": pergunta})
+            # Limitar a últimas 15 mensagens para não exceder tokens
+            historico_limitado = historico_conversa[-15:]
+            messages.extend(historico_limitado)
+            log(f"📚 Usando histórico: {len(historico_limitado)} mensagens anteriores")
+        else:
+            log("🆕 Primeira mensagem do cliente (sem histórico)")
         
         # Chamar OpenAI
         response = client.chat.completions.create(
-            model="gpt-4o-mini",  # Modelo mais acessível e rápido
+            model="gpt-4o-mini",
             messages=messages,
             temperature=0.7,
-            max_tokens=200  # Reduzido para respostas mais curtas
+            max_tokens=200
         )
         
         resposta = response.choices[0].message.content
@@ -326,6 +579,11 @@ def verificar_horario_funcionamento():
     """Verifica se está dentro do horário de funcionamento"""
     agora = datetime.now(TIMEZONE)
     hora_atual = agora.hour
+    dia_semana = agora.weekday()  # 0=segunda, 6=domingo
+    
+    # Verificar se é dia útil (seg-sex)
+    if dia_semana >= 5:  # sábado ou domingo
+        return False, f"Fim de semana ({hora_atual}h)"
     
     dentro_horario = HORA_INICIO <= hora_atual < HORA_FIM
     
@@ -373,43 +631,51 @@ def enviar_mensagem_digisac(contact_id, texto):
         log(f"❌ Erro ao enviar Digisac: {e}")
         return False
 
-def verificar_atendente_humano(dados):
-    """Verifica se há atendente humano no chamado"""
-    data = dados.get('data', {})
-    ticket_user_id = data.get('ticketUserId')
-    return ticket_user_id is not None
-
 # ========== WEBHOOK ENDPOINT ==========
 
-@app.route('/webhook', methods=['POST'])
-@app.route('/webhook/digisac', methods=['POST'])  # Rota alternativa
-def webhook():
-    """Recebe mensagens do Digisac via webhook"""
+@app.route('/webhook/prospeccao', methods=['POST'])
+def webhook_prospeccao():
+    """Recebe mensagens do Digisac via webhook - APENAS para número de prospecção"""
+    print("[DEBUG] Webhook chamado!")
+    log("[DEBUG] Iniciando webhook_prospeccao()")
     try:
+        print("[DEBUG] Tentando pegar JSON...")
         dados = request.get_json()
-        log(f"📥 Webhook recebido")
-        
-        # Verificar área (Fila vs Chat)
-        data = dados.get('data', {})
-        ticket_user_id = data.get('ticketUserId')
-        
-        if ticket_user_id:
-            log(f"⏸️ Chamado no Chat (atendente: {ticket_user_id}) - Bot não atua")
-            return jsonify({"status": "chat_area"}), 200
-        
-        log(f"✅ Chamado na Fila/Contatos - Bot atua")
+        print(f"[DEBUG] JSON recebido: {dados}")
+        log(f"📥 Webhook PROSPECÇÃO recebido - Dados: {str(dados)[:200]}")
         
         # Verificar tipo de evento
         evento = dados.get('event', '')
+        print(f"[DEBUG] Evento: {evento}")
+        log(f"[DEBUG] Evento recebido: {evento}")
         if evento != 'message.created':
             log(f"⏭️ Evento '{evento}' ignorado")
             return jsonify({"status": "ignored"}), 200
         
         # Extrair informações
+        data = dados.get('data', {})
+        print(f"[DEBUG] Data: {data}")
         mensagem_texto = data.get('text', '')
         contact_id = data.get('contactId', '')
         is_from_me = data.get('isFromMe', False)
         is_from_bot = data.get('isFromBot', False)
+        phone_number = data.get('phoneNumber', '')
+        print(f"[DEBUG] Mensagem: {mensagem_texto}, Contact: {contact_id}, Phone: {phone_number}")
+        log(f"[DEBUG] Mensagem: '{mensagem_texto[:50]}', Contact: {contact_id}, Phone: {phone_number}")
+        
+        # Filtrar por número de telefone específico (se configurado)
+        print(f"[DEBUG] TELEFONE_PROSPECCAO: {TELEFONE_PROSPECCAO}")
+        print(f"[DEBUG] phone_number: {phone_number}")
+        if TELEFONE_PROSPECCAO and phone_number != TELEFONE_PROSPECCAO:
+            log(f"⏭️ Mensagem para outro número ({phone_number}), ignorando")
+            return jsonify({"status": "wrong_number"}), 200
+        print("[DEBUG] Telefone OK ou não configurado")
+        
+        # Verificar se há atendente humano
+        ticket_user_id = data.get('ticketUserId')
+        if ticket_user_id:
+            log(f"⏸️ Atendente humano presente (ID: {ticket_user_id}) - Bot não atua")
+            return jsonify({"status": "human_attending"}), 200
         
         # Ignorar mensagens do bot/próprias
         if is_from_me or is_from_bot:
@@ -421,7 +687,7 @@ def webhook():
             log("⏭️ Mensagem vazia, ignorando")
             return jsonify({"status": "empty_message"}), 200
         
-        log(f"💬 Mensagem do cliente: '{mensagem_texto[:50]}...'")
+        log(f"💬 Mensagem do lead: '{mensagem_texto[:50]}...'")
         
         # Extrair ID único da mensagem
         message_id = data.get('id')
@@ -437,91 +703,103 @@ def webhook():
         agora = time.time()
         mensagens_processadas.update({mid: ts for mid, ts in mensagens_processadas.items() if agora - ts < 3600})
         
+        # Marcar como processada
+        mensagens_processadas[message_id] = agora
+        
         # Verificar horário de funcionamento
-        dentro_horario, msg_horario = verificar_horario_funcionamento()
+        dentro_horario, status_horario = verificar_horario_funcionamento()
+        log(f"⏰ Status horário: {status_horario}")
         
         if not dentro_horario:
-            log(f"⏰ Fora do horário - {msg_horario}")
-            resposta_horario = mensagem_fora_horario()
-            enviar_mensagem_digisac(contact_id, resposta_horario)
-            mensagens_processadas[message_id] = time.time()
-            return jsonify({"status": "fora_horario"}), 200
+            enviar_mensagem_digisac(contact_id, mensagem_fora_horario())
+            return jsonify({"status": "outside_hours"}), 200
         
-        log(f"✅ Dentro do horário - {msg_horario}")
+        # Buscar conhecimento relevante
+        conhecimento = buscar_conhecimento(mensagem_texto)
         
-        # Verificar dados mínimos
-        if not contact_id:
-            log("⚠️ Contact ID ausente")
-            return jsonify({"status": "incomplete_data"}), 400
-        
-        # ===== PROCESSAR MENSAGEM COM IA =====
-        
-        # 1. Buscar conhecimento relevante
-        conhecimentos = buscar_conhecimento(mensagem_texto)
-        
-        # 2. Obter histórico de conversa do cliente
+        # Gerenciar histórico de conversa
         if contact_id not in conversas_clientes:
-            conversas_clientes[contact_id] = []
+            conversas_clientes[contact_id] = {
+                "historico": [],
+                "dados": {}
+            }
+            log(f"🆕 Novo cliente: {contact_id}")
+        else:
+            log(f"🔄 Cliente recorrente: {contact_id} ({len(conversas_clientes[contact_id]['historico'])} msgs no histórico)")
         
-        historico = conversas_clientes[contact_id]
+        # Adicionar mensagem do cliente ao histórico
+        conversas_clientes[contact_id]["historico"].append({
+            "role": "user",
+            "content": mensagem_texto
+        })
+        log(f"➕ Mensagem adicionada ao histórico")
         
-        # 3. Gerar resposta com IA (incluindo histórico)
-        resposta = gerar_resposta_ia(mensagem_texto, conhecimentos, historico)
+        # Limitar histórico a últimas 20 mensagens
+        if len(conversas_clientes[contact_id]["historico"]) > 20:
+            conversas_clientes[contact_id]["historico"] = conversas_clientes[contact_id]["historico"][-20:]
+        
+        # Extrair dados do lead do histórico
+        dados_lead = extrair_dados_conversa(conversas_clientes[contact_id]["historico"])
+        conversas_clientes[contact_id]["dados"] = dados_lead
+        
+        # Log dos dados extraídos
+        dados_coletados = [k for k, v in dados_lead.items() if v]
+        if dados_coletados:
+            log(f"📋 Dados coletados até agora: {', '.join(dados_coletados)}")
+        else:
+            log("📋 Nenhum dado coletado ainda")
+        
+        # Gerar resposta com IA
+        resposta = gerar_resposta_ia(
+            mensagem_texto,
+            conhecimento,
+            conversas_clientes[contact_id]["historico"],
+            dados_lead
+        )
+        
+        # Adicionar resposta do bot ao histórico
+        conversas_clientes[contact_id]["historico"].append({
+            "role": "assistant",
+            "content": resposta
+        })
+        
         # DELAY de 15 segundos para parecer mais humano
         log("⏳ Aguardando 15 segundos para parecer mais humano...")
         time.sleep(15)
-        # 4. Atualizar histórico com mensagem do cliente e resposta do bot
-        conversas_clientes[contact_id].append({"role": "user", "content": mensagem_texto})
-        conversas_clientes[contact_id].append({"role": "assistant", "content": resposta})
         
-        # Limitar histórico a últimas 20 mensagens (10 pares)
-        if len(conversas_clientes[contact_id]) > 20:
-            conversas_clientes[contact_id] = conversas_clientes[contact_id][-20:]
+        # Enviar resposta
+        enviar_mensagem_digisac(contact_id, resposta)
         
-        # 5. Registrar uso dos conhecimentos
-        for conhecimento in conhecimentos:
-            registrar_uso_conhecimento(conhecimento.get('id'))
+        # Verificar se lead está qualificado (tem dados mínimos)
+        if dados_lead.get('segmento') and dados_lead.get('porte') and dados_lead.get('email'):
+            log(f"✅ Lead qualificado: {contact_id}")
+            salvar_lead(contact_id, dados_lead)
         
-        # 6. Enviar resposta imediatamente
-        log(f"📤 Enviando resposta...")
-        if enviar_mensagem_digisac(contact_id, resposta):
-            log(f"✅ Resposta enviada com sucesso")
-        else:
-            log(f"❌ Erro ao enviar resposta")
-            return jsonify({"status": "send_failed"}), 500
-        
-        # 7. Marcar como processada
-        mensagens_processadas[message_id] = time.time()
-        
-        log(f"✅ Processamento completo")
         return jsonify({"status": "success"}), 200
-            
+        
     except Exception as e:
+        print(f"[DEBUG] ERRO NO WEBHOOK: {e}")
+        import traceback
+        traceback.print_exc()
         log(f"❌ Erro no webhook: {e}")
+        log(f"❌ Traceback: {traceback.format_exc()}")
         return jsonify({"status": "error", "message": str(e)}), 500
+
+# ========== ROTA DE SAÚDE ==========
 
 @app.route('/health', methods=['GET'])
 def health():
-    """Endpoint de health check"""
+    """Endpoint de saúde para monitoramento"""
     return jsonify({
-        "status": "online",
-        "timestamp": datetime.now(TIMEZONE).isoformat(),
-        "openai_configurado": bool(OPENAI_API_KEY and OPENAI_API_KEY != "")
+        "status": "ok",
+        "tipo": "prospeccao",
+        "timestamp": datetime.now(TIMEZONE).isoformat()
     }), 200
 
+# ========== INICIALIZAÇÃO ==========
+
 if __name__ == '__main__':
-    log("🚀 Iniciando Agente Difarda com Base de Conhecimento")
-    log(f"📚 Arquivo de conhecimento: {ARQUIVO_CONHECIMENTO}")
-    
-    # Verificar se base de conhecimento existe
-    base = carregar_conhecimento()
-    total_registros = len(base.get('conhecimento', []))
-    log(f"✅ Base carregada: {total_registros} registros")
-    
-    # Verificar OpenAI
-    if OPENAI_API_KEY and OPENAI_API_KEY != "":
-        log("✅ OpenAI configurado")
-    else:
-        log("⚠️ OpenAI não configurado - configure OPENAI_API_KEY")
-    
-    app.run(host='0.0.0.0', port=5000)
+    log("🚀 Agente de Prospecção iniciado")
+    log(f"📞 Telefone configurado: {TELEFONE_PROSPECCAO if TELEFONE_PROSPECCAO else 'TODOS'}")
+    log(f"⏰ Horário: {HORA_INICIO}h-{HORA_FIM}h (seg-sex)")
+    app.run(host='0.0.0.0', port=5000, debug=False)
