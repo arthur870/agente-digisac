@@ -189,7 +189,7 @@ def salvar_lead(contact_id, dados_lead):
 def extrair_dados_conversa(historico):
     """Extrai dados do lead a partir do histórico de conversa"""
     dados = {
-        "segmento": None,  # farmacia ou escola
+        "segmento": None,  # qualquer segmento (farmacia, escola, otica, restaurante, etc)
         "porte": None,  # número de funcionários ou alunos
         "nome": None,
         "email": None,
@@ -200,11 +200,37 @@ def extrair_dados_conversa(historico):
     # Analisar histórico para extrair informações
     texto_completo = " ".join([msg.get('content', '') for msg in historico]).lower()
     
-    # Identificar segmento
-    if any(palavra in texto_completo for palavra in ['farmácia', 'farmacia', 'drogaria']):
-        dados['segmento'] = 'farmacia'
-    elif any(palavra in texto_completo for palavra in ['escola', 'colégio', 'colegio']):
-        dados['segmento'] = 'escola'
+    # Identificar segmento (ACEITA QUALQUER SEGMENTO)
+    import re
+    segmentos_conhecidos = {
+        'farmacia': ['farmácia', 'farmacia', 'drogaria', 'farmarcas'],
+        'escola': ['escola', 'colégio', 'colegio', 'educação', 'ensino'],
+        'otica': ['ótica', 'otica', 'óptica', 'optica'],
+        'restaurante': ['restaurante', 'lanchonete', 'bar', 'café'],
+        'hotel': ['hotel', 'pousada', 'hostel'],
+        'clinica': ['clínica', 'clinica', 'consultório', 'consultorio'],
+        'industria': ['indústria', 'industria', 'fábrica', 'fabrica'],
+        'comercio': ['loja', 'comércio', 'comercio', 'varejo']
+    }
+    
+    # Tentar identificar segmento
+    for segmento, palavras in segmentos_conhecidos.items():
+        if any(palavra in texto_completo for palavra in palavras):
+            dados['segmento'] = segmento
+            break
+    
+    # Se não identificou nenhum segmento conhecido, tenta extrair da conversa
+    if not dados['segmento']:
+        # Procura por padrões como "tenho uma [segmento]", "trabalho em [segmento]"
+        patterns = [
+            r'(?:tenho|trabalho|sou de|atuo em|gerencio)\s+(?:uma?|um)\s+([\w]+)',
+            r'(?:rede de|grupo de)\s+([\w]+)'
+        ]
+        for pattern in patterns:
+            matches = re.findall(pattern, texto_completo)
+            if matches:
+                dados['segmento'] = matches[0]
+                break
     
     # Tentar extrair números (porte)
     import re
@@ -275,7 +301,10 @@ def gerar_resposta_ia(pergunta, contexto_conhecimento, historico_conversa=None, 
             dados_coletados += "\n⚠️ NÃO PEÇA NOVAMENTE informações já coletadas!\n"
         
         # Prompt do sistema
-        system_prompt = f"""Você é Manu, consultora da Difarda Moda Corporativa, especializada em uniformes para farmácias e escolas privadas.
+        system_prompt = f"""Você é Manu, consultora da Difarda Moda Corporativa.
+
+NOSSO FOCO PRINCIPAL: Uniformes para farmácias e escolas privadas (temos cases de sucesso e soluções específicas).
+MAS TAMBÉM ATENDEMOS: Óticas, restaurantes, hotéis, clínicas, indústrias e comércio em geral.
 
 OBJETIVO:
 Conversar naturalmente com o lead, entender suas necessidades e, se houver fit, agendar uma reunião online.
@@ -286,6 +315,7 @@ TOM E PERSONALIDADE:
 - **CONSULTIVA**: Primeiro entenda, depois apresente soluções
 - **PACIENTE**: Não tenha pressa, deixe a conversa fluir
 - **HUMANA**: Converse como uma pessoa real, não como um robô
+- **ADAPTATIVA**: Reconheça o segmento do cliente e adapte a conversa
 
 COMO CONVERSAR:
 - **RESPOSTAS CURTAS**: 1-2 linhas (30-50 palavras)
@@ -304,13 +334,21 @@ DADOS QUE VOCÊ PRECISA COLETAR (na ordem natural da conversa):
 
 REGRAS CRÍTICAS:
 1. **INTELIGÊNCIA CONVERSACIONAL**: NÃO faça todas as perguntas de uma vez!
-2. **CONTEXTO**: Se cliente já mencionou algo, reconheça e não peça novamente
-3. **QUALIFICAÇÃO**: Identifique se está no perfil ideal antes de agendar reunião
-4. **OBJETIVO**: Após coletar os dados, SEMPRE ofereça agendamento de reunião online
+2. **CONTEXTO É TUDO**: 
+   - LEIA O HISTÓRICO antes de responder
+   - Se cliente já disse algo, RECONHEÇA e continue de onde parou
+   - NUNCA peça informação que já foi dada
+   - Se cliente disse "2 lojas", NÃO pergunte "quantas lojas?"
+3. **ADAPTE-SE AO SEGMENTO**:
+   - Se é farmácia ou escola: Mostre entusiasmo (temos expertise!)
+   - Se é outro segmento: Seja acolhedora e descubra as necessidades
+4. **QUALIFICAÇÃO**: Identifique se está no perfil ideal antes de agendar reunião
+5. **OBJETIVO**: Após coletar os dados, SEMPRE ofereça agendamento de reunião online
 
 PERFIL IDEAL:
-- Farmácias: Redes com múltiplas lojas OU 10+ funcionários
-- Escolas: Qualquer porte (temos soluções para pequenas e grandes)
+- Farmácias: Redes com múltiplas lojas OU 10+ funcionários (PRIORIDADE!)
+- Escolas: Qualquer porte (temos soluções para pequenas e grandes) (PRIORIDADE!)
+- Outros segmentos: 20+ funcionários ou múltiplas unidades
 
 {contexto_texto}
 
@@ -346,6 +384,27 @@ Você: "Legal! Quantos alunos vocês têm mais ou menos?"
 
 Cliente: "Uns 300"
 Você: "Entendi! Vocês já trabalham com uniformes ou estão começando agora?"
+
+---
+
+Cliente: "Uniforme para loja"
+Você: "Oi! Tudo bem? Que tipo de loja você tem?"
+
+Cliente: "Ótica"
+Você: "Que legal! Quantas lojas vocês têm?"
+
+Cliente: "2 loja"
+Você: "Entendi! E como funciona hoje com os uniformes da equipe?"
+
+---
+
+EXEMPLO DE COMO NÃO FAZER (ERRADO!):
+
+Cliente: "Ótica"
+Bot: "Entendi! Você está falando sobre uniformes, certo? Em qual segmento você atua? É uma farmácia ou uma escola?" ❌ ERRADO!
+
+Cliente: "2 lojas"
+Bot: "Quantas lojas vocês têm?" ❌ ERRADO! Cliente acabou de dizer!
 
 QUANDO TIVER TODOS OS DADOS:
 "Perfeito, [Nome]! Olha, acho que temos uma solução bem interessante pro seu caso. Que tal a gente marcar uma conversa online pra eu te apresentar nossa equipe e a gente ver isso com mais calma? Você tem disponibilidade essa semana?"
