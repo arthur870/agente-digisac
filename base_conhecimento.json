@@ -127,21 +127,8 @@
       "versao": 1,
       "ativo": true,
       "prioridade": "media"
-    },
-    {
-      "id": "kb_010",
-      "categoria": "atendimento",
-      "titulo": "Horário de Atendimento",
-      "conteudo": "Nosso horário de atendimento é de segunda a sexta-feira, das 8h às 18h (horário de Brasília). Fora desse horário, deixe sua mensagem que retornaremos assim que possível.",
-      "tipo": "texto",
-      "fonte": "documento_manu_2024",
-      "palavras_chave": ["horário", "atendimento", "funciona", "aberto", "horario", "segunda", "sexta"],
-      "data_criacao": "2024-12-15T16:00:00",
-      "data_atualizacao": "2024-12-15T16:00:00",
-      "versao": 1,
-      "ativo": true,
-      "prioridade": "alta"
-    },
+    }
+  
     {
       "id": "kb_011",
       "categoria": "atendimento",
