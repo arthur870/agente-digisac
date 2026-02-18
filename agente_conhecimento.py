@@ -1,4 +1,4 @@
-# Agente Difarda - Atendimento ao Cliente (v2.0 - Reescrito)
+# Agente Difarda - Atendimento ao Cliente (v3.0 - Com Buffer)
 # Webhook: /webhook/digisac
 import pytz
 import time
@@ -6,6 +6,7 @@ import requests
 import json
 import hashlib
 import os
+import threading
 from datetime import datetime
 from flask import Flask, request, jsonify
 from openai import OpenAI
@@ -21,7 +22,7 @@ ARQUIVO_LOG = "agente_conhecimento_log.txt"
 HORA_INICIO = 0
 HORA_FIM = 24
 TIMEZONE = pytz.timezone('America/Sao_Paulo')
-DELAY_RESPOSTA = 15  # segundos
+BUFFER_TIMEOUT = 25  # segundos para aguardar mais mensagens antes de responder
 
 app = Flask(__name__)
 
@@ -30,6 +31,77 @@ conversas_clientes = {}  # {contact_id: [{"role": "user/assistant", "content": "
 
 # Controle de mensagens processadas (evita duplicatas)
 mensagens_processadas = {}  # {message_id: timestamp}
+
+# ========== SISTEMA DE BUFFER ==========
+# Acumula mensagens do mesmo cliente antes de processar
+# Quando chega uma mensagem, aguarda BUFFER_TIMEOUT segundos
+# Se chegarem mais mensagens nesse periodo, o timer reinicia
+# So processa quando o cliente parar de digitar
+
+buffer_mensagens = {}  # {contact_id: {"mensagens": [...], "timer": Timer}}
+buffer_lock = threading.Lock()
+
+def adicionar_ao_buffer(contact_id, mensagem):
+    """Adiciona mensagem ao buffer do cliente e reinicia o timer"""
+    with buffer_lock:
+        if contact_id not in buffer_mensagens:
+            buffer_mensagens[contact_id] = {
+                "mensagens": [],
+                "timer": None
+            }
+        
+        buf = buffer_mensagens[contact_id]
+        
+        # Cancelar timer anterior (cliente ainda esta digitando)
+        if buf["timer"] is not None:
+            buf["timer"].cancel()
+            log(f"🔄 [{contact_id}] Timer reiniciado (nova mensagem recebida)")
+        
+        # Adicionar mensagem ao buffer
+        buf["mensagens"].append(mensagem)
+        log(f"📥 [{contact_id}] Buffer: {len(buf['mensagens'])} mensagem(ns) acumulada(s)")
+        
+        # Criar novo timer
+        buf["timer"] = threading.Timer(BUFFER_TIMEOUT, processar_buffer, args=[contact_id])
+        buf["timer"].start()
+        log(f"⏳ [{contact_id}] Aguardando {BUFFER_TIMEOUT}s por mais mensagens...")
+
+def processar_buffer(contact_id):
+    """Processa todas as mensagens acumuladas do cliente como uma unica mensagem"""
+    with buffer_lock:
+        if contact_id not in buffer_mensagens:
+            return
+        
+        buf = buffer_mensagens[contact_id]
+        mensagens = buf["mensagens"].copy()
+        buf["mensagens"] = []
+        buf["timer"] = None
+    
+    if not mensagens:
+        return
+    
+    # Juntar todas as mensagens em uma so
+    if len(mensagens) == 1:
+        mensagem_completa = mensagens[0]
+        log(f"💬 [{contact_id}] Processando 1 mensagem: {mensagem_completa[:60]}")
+    else:
+        mensagem_completa = " | ".join(mensagens)
+        log(f"💬 [{contact_id}] Processando {len(mensagens)} mensagens agrupadas: {mensagem_completa[:80]}")
+    
+    # Gerar resposta
+    resposta = gerar_resposta(mensagem_completa, contact_id)
+    
+    # Salvar historico
+    if contact_id not in conversas_clientes:
+        conversas_clientes[contact_id] = []
+    conversas_clientes[contact_id].append({"role": "user", "content": mensagem_completa})
+    conversas_clientes[contact_id].append({"role": "assistant", "content": resposta})
+    
+    if len(conversas_clientes[contact_id]) > 30:
+        conversas_clientes[contact_id] = conversas_clientes[contact_id][-30:]
+    
+    # Enviar resposta
+    enviar_mensagem_digisac(contact_id, resposta)
 
 # ========== LOG ==========
 
@@ -153,6 +225,11 @@ COMO VOCE DEVE SE COMPORTAR:
    - Se o cliente ja informou algo (nome, escola, quantidade), reconheca e avance
    - NAO repita perguntas ja respondidas
 
+6. MENSAGENS AGRUPADAS:
+   - As vezes o cliente envia varias mensagens curtas seguidas (separadas por " | ")
+   - Trate como UMA UNICA mensagem
+   - Leia tudo antes de responder e de UMA UNICA resposta que enderece todos os pontos
+
 ENDERECO DA EMPRESA:
 R. Eduardo Gomes, 2245 - Maranhao Novo, Imperatriz - MA
 Google Maps: https://maps.app.goo.gl/g92MZGtzoM2CqVM9A"""
@@ -267,7 +344,7 @@ def webhook():
             return jsonify({"status": "duplicate"}), 200
         mensagens_processadas[message_id] = agora
         
-        log(f"💬 [{contact_id}] {mensagem[:60]}")
+        log(f"📨 [{contact_id}] Recebido: {mensagem[:60]}")
         
         # Verificar horario
         hora_atual = datetime.now(TIMEZONE).hour
@@ -280,27 +357,13 @@ def webhook():
             )
             return jsonify({"status": "outside_hours"}), 200
         
-        # Gerar resposta com IA
-        resposta = gerar_resposta(mensagem, contact_id)
+        # Adicionar ao buffer (NAO processa imediatamente)
+        # O buffer aguarda BUFFER_TIMEOUT segundos por mais mensagens
+        # Se o cliente enviar mais mensagens, o timer reinicia
+        # Quando o cliente parar de digitar, todas as mensagens sao processadas juntas
+        adicionar_ao_buffer(contact_id, mensagem)
         
-        # Salvar no historico APOS gerar resposta
-        if contact_id not in conversas_clientes:
-            conversas_clientes[contact_id] = []
-        conversas_clientes[contact_id].append({"role": "user", "content": mensagem})
-        conversas_clientes[contact_id].append({"role": "assistant", "content": resposta})
-        
-        # Limitar historico a 30 mensagens
-        if len(conversas_clientes[contact_id]) > 30:
-            conversas_clientes[contact_id] = conversas_clientes[contact_id][-30:]
-        
-        # Delay para parecer humano
-        log(f"⏳ Aguardando {DELAY_RESPOSTA}s...")
-        time.sleep(DELAY_RESPOSTA)
-        
-        # Enviar
-        enviar_mensagem_digisac(contact_id, resposta)
-        
-        return jsonify({"status": "success"}), 200
+        return jsonify({"status": "buffered"}), 200
         
     except Exception as e:
         log(f"❌ Erro webhook: {e}")
@@ -313,16 +376,18 @@ def health():
     return jsonify({
         "status": "online",
         "tipo": "atendimento",
+        "versao": "3.0",
+        "buffer_timeout": BUFFER_TIMEOUT,
         "timestamp": datetime.now(TIMEZONE).isoformat()
     }), 200
 
 # ========== INICIALIZACAO ==========
 
 if __name__ == '__main__':
-    log("🚀 Agente Difarda v2.0 - Atendimento")
+    log("🚀 Agente Difarda v3.0 - Atendimento (com Buffer)")
     log(f"📚 Base: {ARQUIVO_CONHECIMENTO}")
     log(f"⏰ Horario: {HORA_INICIO}h-{HORA_FIM}h (seg-sex)")
-    log(f"⏳ Delay: {DELAY_RESPOSTA}s")
+    log(f"⏳ Buffer: {BUFFER_TIMEOUT}s (aguarda cliente parar de digitar)")
     
     if OPENAI_API_KEY:
         log("✅ OpenAI configurado")
